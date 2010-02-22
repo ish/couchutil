@@ -1,0 +1,10 @@
+# General stuff we don't want in the repository.
+/build
+/dist
+*~
+*.pyc
+/eggs/
+/include/
+/lib/
+/parts/
+
