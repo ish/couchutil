@@ -14,12 +14,17 @@ class ReservationError(Exception):
     """
     Base class for all reservation errors.
     """
+    def __init__(self, message):
+        self.message = message
 
 
 class AlreadyExists(ReservationError):
     """
     Reservation already exists error.
     """
+    def __init__(self, message, id):
+        ReservationError.__init__(self, message)
+        self.id = id
 
 
 class ReservationManager(object):
@@ -61,7 +66,7 @@ class ReservationManager(object):
             docid = self.db.create(self._reservation_doc(id))
             return self.db.get(docid)
         except couchdb.ResourceConflict:
-            raise AlreadyExists(id)
+            raise AlreadyExists('%r already exists'%id, id)
 
     def release(self, id):
         if self.prefix is not None:
