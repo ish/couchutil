@@ -45,28 +45,21 @@ class ChangesProcessor(object):
             time.sleep(self.poll_delay)
 
     def run_forever(self):
+        # Released version of couchdb-python doesn't support feed='continuous'
+        # so simulate it using a longpoll loop for now.
+        changes_resource = self.db.resource('_changes')
         while True:
-            changes_resource = self.db.resource('_changes')
             startkey = self._read_startkey()
-            args = {'feed': 'longpoll'}
+            args = {'feed': 'longpoll', 'limit': self.batch_size}
             if startkey is not None:
                 args['since'] = startkey
             headers, changes = changes_resource.get(**args)
-            # We could get receive a lot more changes than the batch_size here,
-            # i.e. if we haven't watched the database for a while (or ever), so
-            # we need to split into batch_size'd chunks to avoid consuming lots
-            # of memory.
+            # CouchDB 0.10 doesn't understand the limit arg we passed so batch
+            # the results up to avoid doing too much in one go.
             for batch in ibatch(changes['results'], self.batch_size):
-                # We need a list to a) avoid consuming the iterator, and b) to
-                # get the 'seq' from the last item.
                 batch = list(batch)
                 self.handle_changes([result['id'] for result in batch])
-                # We know we've handled all of the changes in this batch so
-                # update the state.
                 self._write_startkey(batch[-1]['seq'])
-            # We got to the end of the _changes results. Update the state one
-            # last time.
-            self._write_startkey(changes['last_seq'])
 
     def run_once(self):
         changes_resource = self.db.resource('_changes')
