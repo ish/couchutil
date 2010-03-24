@@ -69,17 +69,23 @@ class ChangesProcessor(object):
             self._write_startkey(changes['last_seq'])
 
     def run_once(self):
+        changes_resource = self.db.resource('_changes')
         while True:
             startkey = self._read_startkey()
             log.debug('Reading updates from %r', startkey)
             args = {'limit': self.batch_size}
             if startkey is not None:
-                args['startkey'] = startkey
-            rows = list(self.db.view('_all_docs_by_seq', **args))
-            if not rows:
+                args['since'] = startkey
+            headers, changes = changes_resource.get(**args)
+            results = changes['results']
+            if not results:
                 break
-            self.handle_changes([row['id'] for row in rows])
-            self._write_startkey(rows[-1]['key'])
+            # CouchDB 0.10 doesn't understand the limit arg we passed so batch
+            # the results up to avoid doing too much in one go.
+            for batch in ibatch(changes['results'], self.batch_size):
+                batch = list(batch)
+                self.handle_changes([result['id'] for result in batch])
+                self._write_startkey(batch[-1]['seq'])
 
     def handle_changes(self, ids):
         for row in self.db.view('_all_docs', keys=ids, include_docs=True):
