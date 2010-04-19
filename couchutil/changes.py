@@ -2,7 +2,6 @@
 General-purpose CouchDB utilities.
 """
 
-import itertools
 import logging
 import time
 
@@ -45,40 +44,33 @@ class ChangesProcessor(object):
             time.sleep(self.poll_delay)
 
     def run_forever(self):
-        # Released version of couchdb-python doesn't support feed='continuous'
-        # so simulate it using a longpoll loop for now.
-        changes_resource = self.db.resource('_changes')
-        while True:
-            startkey = self._read_startkey()
-            args = {'feed': 'longpoll', 'limit': self.batch_size}
-            if startkey is not None:
-                args['since'] = startkey
-            headers, changes = changes_resource.get(**args)
-            # CouchDB 0.10 doesn't understand the limit arg we passed so batch
-            # the results up to avoid doing too much in one go.
-            for batch in ibatch(changes['results'], self.batch_size):
-                batch = list(batch)
-                self.handle_changes([result['id'] for result in batch])
-                self._write_startkey(batch[-1]['seq'])
+        # Run once for efficiency, i.e. to avoid process changes one
+        # at a time.
+        self.run_once()
+        # Start a continuous changes loop.
+        startkey = self._read_startkey()
+        options = {'feed': 'continuous', 'heartbeat': 15000}
+        if startkey:
+            options['since'] = startkey
+        log.debug('Reading updates from %r', startkey)
+        for o in _changes(self.db, **options):
+            self.handle_changes([o['id']])
+            self._write_startkey(o['seq'])
 
     def run_once(self):
-        changes_resource = self.db.resource('_changes')
+        startkey = self._read_startkey()
+        options = {'limit': self.batch_size}
         while True:
-            startkey = self._read_startkey()
             log.debug('Reading updates from %r', startkey)
-            args = {'limit': self.batch_size}
-            if startkey is not None:
-                args['since'] = startkey
-            headers, changes = changes_resource.get(**args)
-            results = changes['results']
+            if startkey:
+                options['since'] = startkey
+            o = _changes(self.db, **options)
+            results = o['results']
             if not results:
                 break
-            # CouchDB 0.10 doesn't understand the limit arg we passed so batch
-            # the results up to avoid doing too much in one go.
-            for batch in ibatch(changes['results'], self.batch_size):
-                batch = list(batch)
-                self.handle_changes([result['id'] for result in batch])
-                self._write_startkey(batch[-1]['seq'])
+            self.handle_changes([r['id'] for r in results])
+            startkey = results[-1]['seq']
+            self._write_startkey(startkey)
 
     def handle_changes(self, ids):
         for row in self.db.view('_all_docs', keys=ids, include_docs=True):
@@ -103,9 +95,38 @@ class ChangesProcessor(object):
         open(self.__statefile, 'wb').write(str(startkey))
 
 
-def ibatch(iterable, size):
-    sourceiter = iter(iterable)
+def _changes(db, **options):
+    """
+    Choose between API from couchdb-python or a more "quick and dirty"
+    implementation.
+    """
+    if hasattr(db, 'changes'):
+        return db.changes(**options)
+    else:
+        if options.get('feed') == 'continuous':
+            return _changes_sim_continuous(db, **options)
+        else:
+            return _changes_sim(db, **options)
+
+
+def _changes_sim(db, **options):
+    changes_resource = db.resource('_changes')
+    headers, changes = changes_resource.get(**options)
+    return changes
+
+
+def _changes_sim_continuous(db, **options):
+    # couchdb-python < 0.7 doesn't have a changes API so simulate it
+    # using a longpoll loop.
+    options['feed'] = 'longpoll'
     while True:
-        batchiter = itertools.islice(sourceiter, size)
-        yield itertools.chain([batchiter.next()], batchiter)
+        changes = _changes_sim(db, **options)
+        results = changes['results']
+        if results:
+            for result in results:
+                yield result
+            options['since'] = result['seq']
+        else:
+            yield {'last_seq': changes['last_seq']}
+            break
 
