@@ -88,7 +88,7 @@ class ChangesProcessor(object):
     def _read_startkey(self):
         try:
             return int(open(self.__statefile, 'rb').read())
-        except IOError:
+        except (IOError, ValueError):
             return None
 
     def _write_startkey(self, startkey):
